@@ -1,0 +1,8 @@
+-- Reset database for new authentication schema
+DROP TABLE IF EXISTS favors CASCADE;
+DROP TABLE IF EXISTS users CASCADE;
+DROP TABLE IF EXISTS ratings CASCADE;
+DROP TABLE IF EXISTS favr_points_history CASCADE;
+DROP TABLE IF EXISTS bookmarks CASCADE;
+DROP TABLE IF EXISTS likes CASCADE;
+DROP TABLE IF EXISTS sessions CASCADE;

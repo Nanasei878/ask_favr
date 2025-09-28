@@ -1,0 +1,131 @@
+ return (
+            <div
+              key={msg.id}
+              className={`flex safari-message-fix ${msg.isMe ? "justify-end" : "justify-start"}`}
+              style={{ minHeight: '40px', marginBottom: '8px' }}
+            >
+              <div className={`flex flex-col ${msg.isMe ? "items-end" : "items-start"}`}>
+                {!msg.isMe && (
+                  <button
+                    onClick={() => {
+                      trackEvent('user_profile_click', 'engagement', 'chat_message');
+                      // Determine who sent this message (the conversation partner)
+                      const isUserPoster = String(user?.id) === String(favor.posterId);
+                      const partnerId = isUserPoster ? favor.helperId : favor.posterId;
+                      setLocation(`/user/${partnerId}`);
+                    }}
+                    className="text-xs text-slate-400 hover:text-favr-blue mb-1 transition-colors duration-200"
+                  >
+                    {(() => {
+                      // Show the name of the person who sent this message (conversation partner)
+                      const isUserPoster = String(user?.id) === String(favor.posterId);
+                      
+                      if (isUserPoster) {
+                        // Current user is poster, so other messages are from helper
+                        return favor.helperName || favor.helperFirstName || "Helper";
+                      } else {
+                        // Current user is helper, so other messages are from poster
+                        return favor.posterFirstName || favor.posterName || "Poster";
+                      }
+                    })()}
+                  </button>
+                )}
+                <div
+                  className={`max-w-xs px-3 py-2 rounded-2xl ${
+                    msg.isMe
+                      ? "bg-favr-blue text-white rounded-br-md"
+                      : "bg-slate-700 text-white rounded-bl-md"
+                  }`}
+                  style={{ 
+                    display: 'block',
+                    minHeight: '32px',
+                    wordBreak: 'break-word'
+                  }}
+                >
+                  <p className="text-sm" style={{ margin: 0, padding: 0 }}>
+                    {msg.content || '[Empty message]'}
+                  </p>
+                  <p
+                    className={`text-xs mt-1 ${
+                      msg.isMe ? "text-blue-100" : "text-slate-400"
+                    }`}
+                    style={{ margin: '4px 0 0 0', padding: 0 }}
+                  >
+                    {formatTime(msg.timestamp)}
+                  </p>
+                </div>
+              </div>
+            </div>
+          );
+        }) : (
+          <div className="text-center py-8">
+            <p className="text-slate-400 text-sm">
+              No messages yet. Start a conversation!
+            </p>
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Completion Button (only show for accepted favors) */}
+      {favor?.status === 'accepted' && (
+        <div className="px-6 py-3 bg-slate-800 border-t border-slate-700">
+          <Button
+            onClick={() => {
+              trackEvent('completion_modal_opened', 'completion', 'chat_interface', parseInt(favorId || '0'));
+              setShowCompletionModal(true);
+            }}
+            className="w-full bg-green-600 hover:bg-green-700 text-white"
+          >
+            <CheckCircle2 className="w-4 h-4 mr-2" />
+            Mark as Completed
+          </Button>
+        </div>
+      )}
+
+      {/* Message Input */}
+      <div className="p-6 border-t border-slate-700 bg-slate-800 w-full">
+        <div className="flex space-x-4 max-w-none">
+          <Input
+            type="text"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck="false"
+            placeholder={isNegotiation ? "Make your offer..." : "Type a message..."}
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyPress={(e) => e.key === "Enter" && handleSendMessage()}
+            className="flex-1 bg-slate-700 border-slate-600 text-white placeholder-slate-400"
+            style={{ 
+              fontSize: '16px',
+              WebkitAppearance: 'none',
+              appearance: 'none',
+              minHeight: '44px'
+            }}
+          />
+          <Button 
+            onClick={handleSendMessage}
+            disabled={!message.trim() || !isConnected}
+            className="bg-favr-blue hover:bg-blue-600 text-white min-h-[44px] disabled:opacity-50"
+          >
+            <Send className="h-4 w-4" />
+            {!isConnected && <span className="ml-2 text-xs">Offline</span>}
+          </Button>
+        </div>
+      </div>
+
+      {/* Completion Modal */}
+      {showCompletionModal && favor && user && (
+        <CompletionModal
+          isOpen={showCompletionModal}
+          onClose={() => setShowCompletionModal(false)}
+          favorId={parseInt(favorId || '0')}
+          favorTitle={favor.title}
+          originalPrice={favor.price}
+          isHelper={favor.helperId === user.id}
+          userId={user.id}
+        />
+      )}
+    </div>
+  );
