@@ -74,7 +74,7 @@ class LocationNotificationService {
         type: "favor" as const,
         title: "New Favor Near You!",
         message: `"${favorTitle}" was posted in your area`,
-        icon: "/favicon.ico",
+        icon: "/icons/favr.png",
         favorId,
         url: `/favor/${favorId}`,
         data: { type: "new_favor", favorId },
