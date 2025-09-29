@@ -3,6 +3,7 @@ import { WebSocketServer } from "ws";
 import type { Server } from "http";
 import { aiModerationService } from "./aiModeration";
 import { sendNotification } from "./unifiedNotificationService";
+import { storage } from "./storage"; 
 
 interface ChatMessage {
   id: string;
@@ -328,15 +329,26 @@ export class ChatService {
       const displayMessage =
         content.length > 80 ? content.substring(0, 80) + "…" : content;
 
+      // 🔽 Get sender first name (fallback to "Someone")
+      let senderFirstName = "Someone";
+      try {
+        const senderNum = Number(senderId);
+        if (!Number.isNaN(senderNum)) {
+          const sender = await storage.getUser(senderNum);
+          if (sender?.firstName) senderFirstName = sender.firstName;
+        }
+      } catch { /* ignore */ }
+
       await sendNotification(
         { type: "users", userIds: [recipientId] },
         {
           type: "chat",
-          title: `New message from ${senderId}`,
+          title: `New message from ${senderFirstName}`, // 🔽 use first name
           message: displayMessage,
           favorId,
-          chatId: favorId, // chat rooms are 1:1 with favors
+          chatId: favorId, // if 1:1 with favors
           icon: "/icons/chat.png",
+          url: `/chat/${favorId}`, // nice to include so the SW can deep-link
         }
       );
 

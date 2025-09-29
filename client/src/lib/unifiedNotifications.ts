@@ -192,7 +192,15 @@ class UnifiedNotificationService {
     try {
       const registration = await navigator.serviceWorker.ready;
 
-      const vapidResp = await fetch("/api/vapid-public-key");
+      const vapidResp = await fetch("/api/vapid-public-key", { credentials: "same-origin" });
+      const ct = String(vapidResp.headers.get("content-type") || "");
+      if (!vapidResp.ok || !ct.includes("application/json")) {
+        const sample = await vapidResp.text().catch(() => "");
+        throw new Error(
+          `VAPID endpoint returned ${vapidResp.status} ${vapidResp.statusText} (ct=${ct}). ` +
+          `Body preview: ${sample.slice(0, 200)}`
+        );
+      }
       const { publicKey } = await vapidResp.json();
 
       const subscription = await registration.pushManager.subscribe({
