@@ -15,23 +15,28 @@ export interface ChatMessageVM {
     isMe: boolean;
 }
 
-interface UseChatSyncOptions {
-    /** Room id returned by /api/chat/conversations or /api/chat/messages/:chatRoomId */
-    chatRoomId: number;
-    /** Favor id (needed for WebSocket join/send per your WS API) */
-    favorId: number;
-    /** The logged-in user id (string to match backend) */
-    currentUserId: string;
-    /** Optional: WS URL (defaults to same origin /ws) */
-    wsUrl?: string;
+export interface UseChatSyncOptions {
+    chatRoomId: number;          // server room id
+    favorId: number;             // favor id (for WS join)
+    currentUserId: string;       // logged in user id
+    wsUrl?: string;              // optional custom ws url
 }
 
-export function useChatSync({
-    chatRoomId,
-    favorId,
-    currentUserId,
-    wsUrl = (typeof window !== "undefined" ? `${location.origin.replace(/^http/, "ws")}/ws` : ""),
-}: UseChatSyncOptions) {
+// NOTE: opts is optional; hook gracefully no-ops until enabled.
+export function useChatSync(opts?: Partial<UseChatSyncOptions>) {
+    // Pull values safely out of an optional object
+    const chatRoomId = opts?.chatRoomId ?? null;
+    const favorId = opts?.favorId ?? null;
+    const currentUserId = opts?.currentUserId ?? null;
+    const wsUrl =
+        opts?.wsUrl ??
+        (typeof window !== "undefined"
+            ? `${location.origin.replace(/^http/, "ws")}/ws`
+            : "");
+
+    // Enabled only when we have everything
+    const enabled = Boolean(chatRoomId && favorId && currentUserId);
+
     const [messages, setMessages] = useState<ChatMessageVM[]>([]);
     const [otherOnline, setOtherOnline] = useState<boolean>(false);
     const [otherUserId, setOtherUserId] = useState<string | null>(null);
@@ -41,43 +46,52 @@ export function useChatSync({
     const wsRef = useRef<WebSocket | null>(null);
     const connectingRef = useRef(false);
 
-    const authHeaders = useMemo(
-        () => ({ "Content-Type": "application/json", "user-id": currentUserId }),
-        [currentUserId]
-    );
+    const authHeaders = useMemo(() => {
+        const h: Record<string, string> = { "Content-Type": "application/json" };
+        if (currentUserId) h["user-id"] = currentUserId;
+        return h;
+    }, [currentUserId]);
 
-    // --- Helpers --------------------------------------------------------------
+    /* -------------------------- HTTP helpers -------------------------- */
 
     const postJSON = useCallback(
         async (url: string, body?: any) => {
+            if (!enabled) return {};
             const res = await fetch(url, {
                 method: "POST",
                 headers: authHeaders,
                 body: body ? JSON.stringify(body) : undefined,
             });
             if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-            return res.json().catch(() => ({}));
+            try {
+                return await res.json();
+            } catch {
+                return {};
+            }
         },
-        [authHeaders]
+        [enabled, authHeaders]
     );
 
     const getJSON = useCallback(
         async (url: string) => {
+            if (!enabled) return null;
             const res = await fetch(url, { headers: authHeaders });
             if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
             return res.json();
         },
-        [authHeaders]
+        [enabled, authHeaders]
     );
 
-    // --- Fetch messages (by chatRoomId) + auto mark delivered ----------------
+    /* ----------------------- REST sync & presence ---------------------- */
+
     const fetchMessages = useCallback(async () => {
-        // Prefer the chatRoomId endpoint (simple array). If you prefer favorId, swap the URL.
-        const data: ChatMessageVM[] = await getJSON(`/api/chat/messages/${chatRoomId}`);
+        if (!enabled || !chatRoomId || !currentUserId) return;
+        const data = (await getJSON(`/api/chat/messages/${chatRoomId}`)) as ChatMessageVM[] | null;
+        if (!data) return;
 
         setMessages(data);
 
-        // Auto-ack "sent" → "delivered" for my incoming messages
+        // auto-ack "sent" → "delivered"
         const toDeliver = data.filter(
             (m) => m.recipientId === currentUserId && m.status === "sent"
         );
@@ -86,19 +100,18 @@ export function useChatSync({
                 toDeliver.map((m) => postJSON(`/api/chat/messages/${m.id}/delivered`))
             );
         }
-    }, [chatRoomId, currentUserId, getJSON, postJSON]);
+    }, [enabled, chatRoomId, currentUserId, getJSON, postJSON]);
 
-    // --- Fetch meta (otherOnline/otherUserId) using favorId endpoint ----------
     const fetchPresenceMeta = useCallback(async () => {
-        // This endpoint returns richer payload incl. otherOnline
+        if (!enabled || !favorId) return;
         const data = await getJSON(`/api/chat/${favorId}/messages`);
-        if (data?.otherOnline !== undefined) setOtherOnline(!!data.otherOnline);
-        if (data?.otherUserId) setOtherUserId(String(data.otherUserId));
-    }, [favorId, getJSON]);
+        if (!data) return;
+        if (data.otherOnline !== undefined) setOtherOnline(!!data.otherOnline);
+        if (data.otherUserId) setOtherUserId(String(data.otherUserId));
+    }, [enabled, favorId, getJSON]);
 
-    // --- Mark all incoming (to me) messages as seen ---------------------------
     const markAllSeen = useCallback(async () => {
-        if (!messages.length) return;
+        if (!enabled || !messages.length || !currentUserId) return;
         const unseen = messages.filter(
             (m) => m.recipientId === currentUserId && m.status !== "seen"
         );
@@ -108,18 +121,19 @@ export function useChatSync({
             unseen.map((m) => postJSON(`/api/chat/messages/${m.id}/seen`))
         );
 
-        // Optimistic update
         setMessages((prev) =>
             prev.map((m) =>
                 m.recipientId === currentUserId ? { ...m, status: "seen" } : m
             )
         );
-    }, [messages, currentUserId, postJSON]);
+    }, [enabled, messages, currentUserId, postJSON]);
 
-    // --- WebSocket connection / events ---------------------------------------
+    /* --------------------------- WebSocket ---------------------------- */
+
     const ensureWs = useCallback(() => {
-        if (connectingRef.current || wsRef.current?.readyState === WebSocket.OPEN) return;
-        if (!wsUrl) return;
+        if (!enabled || !wsUrl) return;
+        if (connectingRef.current || wsRef.current?.readyState === WebSocket.OPEN)
+            return;
 
         connectingRef.current = true;
         const ws = new WebSocket(wsUrl);
@@ -127,7 +141,6 @@ export function useChatSync({
         ws.onopen = () => {
             setIsConnected(true);
             connectingRef.current = false;
-            // Register and join
             ws.send(JSON.stringify({ type: "register_user", userId: currentUserId }));
             ws.send(JSON.stringify({ type: "join_chat", favorId, userId: currentUserId }));
         };
@@ -135,21 +148,18 @@ export function useChatSync({
         ws.onmessage = (ev) => {
             try {
                 const msg = JSON.parse(ev.data);
-
                 switch (msg.type) {
                     case "chat_history": {
-                        // history arrives when we join via WS; we still prefer REST as source of truth
-                        // but if we have nothing, adopt it
                         if (!messages.length && Array.isArray(msg.messages)) {
                             const fromWs: ChatMessageVM[] = msg.messages.map((m: any) => ({
-                                id: m.id,
-                                content: m.content ?? "",
-                                senderId: m.senderId,
-                                recipientId: m.recipientId ?? "",
+                                id: String(m.id),
+                                content: String(m.content ?? ""),
+                                senderId: String(m.senderId),
+                                recipientId: String(m.recipientId ?? ""),
                                 timestamp: m.timestamp ?? new Date().toISOString(),
                                 status: (m.status ?? "sent") as MessageStatus,
                                 type: (m.type ?? "text") as MessageType,
-                                isMe: m.senderId === currentUserId,
+                                isMe: String(m.senderId) === currentUserId,
                             }));
                             setMessages(fromWs);
                         }
@@ -158,41 +168,42 @@ export function useChatSync({
                         }
                         break;
                     }
-
                     case "new_message": {
                         const m = msg.message;
                         if (!m) break;
-                        const vm: ChatMessageVM = {
-                            id: String(m.id),
-                            content: String(m.content ?? ""),
-                            senderId: String(m.senderId),
-                            recipientId: String(m.recipientId ?? ""),
-                            timestamp: m.timestamp ?? new Date().toISOString(),
-                            status: (m.status ?? "sent") as MessageStatus,
-                            type: (m.type ?? "text") as MessageType,
-                            isMe: String(m.senderId) === currentUserId,
-                        };
-                        setMessages((prev) => [...prev, vm]);
+                        setMessages((prev) => [
+                            ...prev,
+                            {
+                                id: String(m.id),
+                                content: String(m.content ?? ""),
+                                senderId: String(m.senderId),
+                                recipientId: String(m.recipientId ?? ""),
+                                timestamp: m.timestamp ?? new Date().toISOString(),
+                                status: (m.status ?? "sent") as MessageStatus,
+                                type: (m.type ?? "text") as MessageType,
+                                isMe: String(m.senderId) === currentUserId,
+                            },
+                        ]);
                         break;
                     }
-
                     case "message_sent": {
                         const m = msg.message;
                         if (!m) break;
-                        const vm: ChatMessageVM = {
-                            id: String(m.id),
-                            content: String(m.content ?? ""),
-                            senderId: String(m.senderId),
-                            recipientId: String(m.recipientId ?? ""),
-                            timestamp: m.timestamp ?? new Date().toISOString(),
-                            status: (m.status ?? "sent") as MessageStatus,
-                            type: (m.type ?? "text") as MessageType,
-                            isMe: true,
-                        };
-                        setMessages((prev) => [...prev, vm]);
+                        setMessages((prev) => [
+                            ...prev,
+                            {
+                                id: String(m.id),
+                                content: String(m.content ?? ""),
+                                senderId: String(m.senderId),
+                                recipientId: String(m.recipientId ?? ""),
+                                timestamp: m.timestamp ?? new Date().toISOString(),
+                                status: (m.status ?? "sent") as MessageStatus,
+                                type: (m.type ?? "text") as MessageType,
+                                isMe: true,
+                            },
+                        ]);
                         break;
                     }
-
                     case "message_seen": {
                         const { messageId } = msg;
                         setMessages((prev) =>
@@ -200,32 +211,28 @@ export function useChatSync({
                         );
                         break;
                     }
-
-                    case "user_online": {
+                    case "user_online":
                         if (msg.userId && msg.userId === otherUserId) setOtherOnline(true);
                         break;
-                    }
-
-                    case "user_offline": {
+                    case "user_offline":
                         if (msg.userId && msg.userId === otherUserId) setOtherOnline(false);
                         break;
-                    }
-
-                    case "typing": {
-                        // Only reflect typing for the other user
+                    case "typing":
                         if (msg.userId && msg.userId !== currentUserId) {
                             setIsTyping(!!msg.isTyping);
                         }
                         break;
-                    }
                 }
-            } catch { }
+            } catch {
+                /* ignore */
+            }
         };
 
         ws.onclose = () => {
             setIsConnected(false);
             wsRef.current = null;
-            setTimeout(() => ensureWs(), 1500); // simple retry
+            // retry only if still enabled
+            if (enabled) setTimeout(() => ensureWs(), 1500);
         };
 
         ws.onerror = () => {
@@ -235,73 +242,84 @@ export function useChatSync({
         };
 
         wsRef.current = ws;
-    }, [wsUrl, currentUserId, favorId, messages.length, otherUserId]);
+    }, [enabled, wsUrl, currentUserId, favorId, messages.length, otherUserId]);
 
-    // --- Send message (WS first, REST fallback) --------------------------------
+    /* ----------------------------- API -------------------------------- */
+
     const sendMessage = useCallback(
         async (content: string) => {
             const trimmed = content.trim();
-            if (!trimmed) return;
+            if (!enabled || !trimmed) return;
 
             const ws = wsRef.current;
             if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "send_message", favorId, senderId: currentUserId, content: trimmed }));
+                ws.send(
+                    JSON.stringify({
+                        type: "send_message",
+                        favorId,
+                        senderId: currentUserId,
+                        content: trimmed,
+                    })
+                );
                 return;
             }
 
-            // REST fallback (requires chatRoomId)
+            // REST fallback
             await postJSON(`/api/chat/${chatRoomId}/messages`, { content: trimmed });
-            // Optimistic fetch to reflect new message if WS not connected
             await fetchMessages();
         },
-        [favorId, currentUserId, postJSON, chatRoomId, fetchMessages]
+        [enabled, favorId, currentUserId, postJSON, chatRoomId, fetchMessages]
     );
 
-    // --- Typing indicators -----------------------------------------------------
     const startTyping = useCallback(() => {
+        if (!enabled) return;
         const ws = wsRef.current;
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "typing", favorId, userId: currentUserId, isTyping: true }));
         }
-    }, [favorId, currentUserId]);
+    }, [enabled, favorId, currentUserId]);
 
     const stopTyping = useCallback(() => {
+        if (!enabled) return;
         const ws = wsRef.current;
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "typing", favorId, userId: currentUserId, isTyping: false }));
         }
-    }, [favorId, currentUserId]);
+    }, [enabled, favorId, currentUserId]);
 
-    // --- Effects ---------------------------------------------------------------
+    /* ---------------------------- Effects ------------------------------ */
+
     useEffect(() => {
+        if (!enabled) return;
         fetchMessages();
         fetchPresenceMeta();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [chatRoomId, favorId]);
+    }, [enabled, fetchMessages, fetchPresenceMeta]);
 
     useEffect(() => {
+        if (!enabled) return;
         ensureWs();
         return () => {
             try {
                 wsRef.current?.close();
             } catch { }
         };
-    }, [ensureWs]);
+    }, [enabled, ensureWs]);
 
-    // Mark seen on window focus (you can also call markAllSeen manually when scrolled to bottom)
     useEffect(() => {
+        if (!enabled) return;
         const onFocus = () => void markAllSeen();
         window.addEventListener("focus", onFocus);
         return () => window.removeEventListener("focus", onFocus);
-    }, [markAllSeen]);
+    }, [enabled, markAllSeen]);
 
     return {
+        // state
         messages,
         otherOnline,
         otherUserId,
         isConnected,
         isTyping,
-
+        // actions
         fetchMessages,
         sendMessage,
         markAllSeen,
