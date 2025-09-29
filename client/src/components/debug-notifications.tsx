@@ -30,7 +30,7 @@ export default function DebugNotifications() {
       
       if (permissionGranted) {
         // Step 4: Set user ID
-        notificationService.setUserId('1');
+        notificationService.setUserId(user.id.toString());
         addLog('👤 User ID set to: 1');
         
         // Step 5: Subscribe to push

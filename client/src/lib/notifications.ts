@@ -135,41 +135,46 @@ export class NotificationService {
   }
 
   private async sendSubscriptionToServer(subscription: PushSubscription): Promise<boolean> {
-    const subscriptionData = {
-      endpoint: subscription.endpoint,
-      keys: {
-        p256dh: this.arrayBufferToBase64URL(subscription.getKey('p256dh')!),
-        auth: this.arrayBufferToBase64URL(subscription.getKey('auth')!)
-      }
-    };
+    // Prefer the standard JSON form (endpoint + keys.p256dh/auth)
+    const json = typeof subscription.toJSON === "function"
+      ? subscription.toJSON()
+      : {
+        endpoint: subscription.endpoint,
+        keys: {
+          p256dh: this.arrayBufferToBase64URL(subscription.getKey("p256dh")!),
+          auth: this.arrayBufferToBase64URL(subscription.getKey("auth")!),
+        },
+      };
 
-    // Get current user ID from session/localStorage
-    const currentUserId = localStorage.getItem('currentUserId') || this.userId;
-    console.log('Sending subscription to server for user:', currentUserId);
-    console.log('Subscription data:', subscriptionData);
+    const currentUserId = localStorage.getItem("currentUserId") || this.userId;
+    console.log("Sending unified subscription to server for user:", currentUserId);
 
-    const response = await fetch('/api/notifications/subscribe', {
-      method: 'POST',
+    const resp = await fetch("/api/notifications/subscribe", {
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
-        'user-id': currentUserId || '1'
+        "Content-Type": "application/json",
+        "user-id": currentUserId || "1", // optional; server mainly reads body
       },
       body: JSON.stringify({
-        userId: currentUserId || '1',
-        subscription: subscriptionData
-      })
+        platform: "webpush",          // 👈 REQUIRED by your backend
+        subscriptionData: json,       // 👈 can also be JSON.stringify(json)
+        userId: currentUserId || "1", // 👈 REQUIRED
+        // any extras are fine; server ignores unknown fields
+        endpoint: json?.endpoint,
+      }),
     });
 
-    const result = await response.json();
-    console.log('Server response:', result);
+    const text = await resp.text(); // avoid JSON parse errors on HTML bodies
+    const data = (() => { try { return JSON.parse(text); } catch { return { raw: text }; } })();
 
-    if (!response.ok) {
-      throw new Error(`Failed to send subscription to server: ${result.message || response.statusText}`);
+    if (!resp.ok) {
+      throw new Error(`Failed to send subscription to server: ${data?.message || text || resp.statusText}`);
     }
-    
-    console.log('✅ Subscription successfully sent to server');
+
+    console.log("✅ Subscription successfully sent to server");
     return true;
   }
+
 
   private async removeSubscriptionFromServer() {
     const response = await fetch('/api/notifications/unsubscribe', {
@@ -206,16 +211,18 @@ export class NotificationService {
   // Utility functions
   private async getVAPIDPublicKey(): Promise<string> {
     try {
-      const response = await fetch('/api/vapid-public-key');
-      const data = await response.json();
-      console.log('Fetched VAPID public key from server:', data.publicKey);
+      const res = await fetch("/api/vapid-public-key");
+      const txt = await res.text();
+      const data = JSON.parse(txt); // will throw if HTML
+      console.log("Fetched VAPID public key from server:", data.publicKey);
       return data.publicKey;
     } catch (error) {
-      console.error('Failed to fetch VAPID key from server, using fallback:', error);
-      const fallbackKey = 'BIiODLOlI5kKVFlPPJ6xYZROMSheisJrGskZNdkFYH-MlXAJ2ix5aD_Pt7E0d6VccAcDck9ypxXQoL1c8GkfD2A';
-      return fallbackKey;
+      console.error("Failed to fetch VAPID key, using fallback:", error);
+      // keep your fallback key here
+      return "BIiODLOlI5kKVFlPPJ6xYZROMSheisJrGskZNdkFYH-MlXAJ2ix5aD_Pt7E0d6VccAcDck9ypxXQoL1c8GkfD2A";
     }
   }
+
 
   private urlBase64ToUint8Array(base64String: string): Uint8Array {
     const padding = '='.repeat((4 - base64String.length % 4) % 4);

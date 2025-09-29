@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Bell, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { notificationService } from '@/lib/notifications';
 import { useAuth } from '@/hooks/use-auth';
 
 export default function NotificationPrompt() {
@@ -10,103 +9,80 @@ export default function NotificationPrompt() {
   const { user } = useAuth();
 
   useEffect(() => {
-    // Always check notification status when user is authenticated
-    if (user) {
-      console.log('NotificationPrompt: User detected:', user.id);
-      
-      // Initialize notification service
-      notificationService.initialize().then(async () => {
-        const permission = Notification.permission;
-        console.log('Current notification permission:', permission);
-        
-        // Check if user already has notifications enabled in database
-        const response = await fetch(`/api/notifications/status/${user.id}`);
-        const status = await response.json();
-        
-        // Only show prompt if browser permission is not granted
-        // AND user hasn't already granted permission before
-        if (permission === 'default') {
-          console.log('Showing notification prompt for user:', user.id, 'Permission:', permission, 'DB Status:', status.hasNotifications);
-          setShowPrompt(true);
-        } else if (permission === 'denied' && !status.hasNotifications) {
-          // Only show if permission denied AND user never had notifications
-          console.log('Showing notification prompt for denied permission:', user.id);
-          setShowPrompt(true);
-        } else {
-          // If permission is granted, ensure user is subscribed
-          notificationService.setUserId(user.id.toString());
-          import('@/lib/unifiedNotifications').then(({ subscribeToNotifications }) => {
-            subscribeToNotifications(user.id.toString()).then(subscribed => {
-              console.log('Auto-subscription result:', subscribed);
-            });
-          });
+    (async () => {
+      if (!user?.id) return;
+
+      // Initialize unified notifications (registers SW + OneSignal/WebPush path)
+      const { unifiedNotificationService, subscribeToNotifications } = await import('@/lib/unifiedNotifications');
+      await unifiedNotificationService.initialize();
+
+      const permission = typeof Notification !== 'undefined' ? Notification.permission : 'default';
+      console.log('NotificationPrompt: user', user.id, 'permission:', permission);
+
+      // Ask backend if we already stored a sub (optional, as you had)
+      let hasDbNotif = false;
+      try {
+        const r = await fetch(`/api/notifications/status/${user.id}`);
+        const j = await r.json().catch(() => ({}));
+        hasDbNotif = !!j?.hasNotifications;
+      } catch { }
+
+      if (permission === 'granted') {
+        // make sure we’re registered server-side
+        try {
+          const ok = await subscribeToNotifications(String(user.id));
+          console.log('Auto-subscription result:', ok);
+        } catch (e) {
+          console.warn('Auto-subscribe failed:', e);
         }
-      });
-    }
-  }, [user]);
+        setShowPrompt(false);
+      } else if (permission === 'default') {
+        setShowPrompt(true);
+      } else if (permission === 'denied' && !hasDbNotif) {
+        setShowPrompt(true);
+      } else {
+        setShowPrompt(false);
+      }
+    })();
+  }, [user?.id]);
 
   const handleEnableNotifications = async () => {
     setIsLoading(true);
-    
     try {
-      if (!user?.id) {
-        console.error('No user ID available');
-        setShowPrompt(false);
-        setIsLoading(false);
-        return;
-      }
+      if (!user?.id) return;
 
-      // Set user ID for notifications
-      notificationService.setUserId(user.id.toString());
-      
-      // Use unified notification system for cross-platform compatibility
-      const { subscribeToNotifications, getDeviceInfo, getNotificationPlatform } = await import('@/lib/unifiedNotifications');
-      
-      // Log device info for debugging
-      const deviceInfo = getDeviceInfo();
-      const platform = getNotificationPlatform();
-      console.log('🔍 Device Detection:', deviceInfo);
-      console.log('📱 Selected Platform:', platform);
-      
-      const subscribed = await subscribeToNotifications(user.id.toString());
-      
-      if (subscribed) {
-        console.log('✅ Push notifications enabled successfully');
-        
-        // Send test notification
+      const { unifiedNotificationService, subscribeToNotifications } = await import('@/lib/unifiedNotifications');
+
+      // useful diagnostics
+      const deviceInfo = unifiedNotificationService.getDeviceInfo();
+      const platform = deviceInfo?.needsOneSignal || !('PushManager' in window) ? 'onesignal' : 'webpush';
+      console.log('🔍 Device:', deviceInfo);
+      console.log('📱 Selected platform:', platform);
+
+      const ok = await subscribeToNotifications(String(user.id));
+      if (ok) {
+        console.log('✅ Push notifications enabled');
+        // send a test ping (non-fatal)
         try {
-          const response = await fetch('/api/notifications/test', {
+          await fetch('/api/notifications/test', {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'user-id': user.id.toString()
-            },
-            body: JSON.stringify({
-              userId: user.id.toString()
-            })
+            headers: { 'Content-Type': 'application/json', 'user-id': String(user.id) },
+            body: JSON.stringify({ userId: String(user.id) }),
           });
-          
-          if (response.ok) {
-            console.log('✅ Test notification sent from landing page');
-          }
-        } catch (error) {
-          console.error('Test notification error:', error);
+        } catch (e) {
+          console.warn('Test notification failed:', e);
         }
-        
         setShowPrompt(false);
       } else {
-        console.error('❌ Failed to subscribe to push notifications');
+        console.error('❌ Failed to subscribe');
         setShowPrompt(false);
       }
-    } catch (error) {
-      console.error('Error enabling notifications:', error);
+    } catch (e) {
+      console.error('Error enabling notifications:', e);
+      setShowPrompt(false);
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const handleDismiss = () => {
-    setShowPrompt(false);
   };
 
   if (!showPrompt) return null;
@@ -118,7 +94,7 @@ export default function NotificationPrompt() {
           <div className="flex-shrink-0">
             <Bell className="w-6 h-6 text-blue-600" />
           </div>
-          
+
           <div className="flex-1">
             <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
               Stay Updated with Nearby Favors
@@ -126,23 +102,13 @@ export default function NotificationPrompt() {
             <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">
               Get instant notifications when new favors are posted within 10km of your location and when you receive messages.
             </p>
-            
+
             <div className="flex space-x-2 mt-3">
-              <Button
-                onClick={handleEnableNotifications}
-                disabled={isLoading}
-                size="sm"
-                className="flex-1"
-              >
+              <Button onClick={handleEnableNotifications} disabled={isLoading} size="sm" className="flex-1">
                 {isLoading ? 'Setting up...' : 'Enable Notifications'}
               </Button>
-              
-              <Button
-                onClick={handleDismiss}
-                variant="outline"
-                size="sm"
-                className="px-2"
-              >
+
+              <Button onClick={() => setShowPrompt(false)} variant="outline" size="sm" className="px-2">
                 <X className="w-4 h-4" />
               </Button>
             </div>
