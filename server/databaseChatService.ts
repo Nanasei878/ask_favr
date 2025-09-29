@@ -373,6 +373,20 @@ export class DatabaseChatService {
   }
 
   // ---------- Notifications ----------
+  private async getUserFirstName(userId: string): Promise<string | null> {
+    try {
+      const idNum = Number(userId);
+      if (Number.isNaN(idNum)) return null;
+      const [u] = await db
+        .select({ firstName: users.firstName })
+        .from(users)
+        .where(eq(users.id, idNum));
+      return u?.firstName ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   private async sendMessageNotification(
     recipientId: string,
     senderId: string,
@@ -382,27 +396,34 @@ export class DatabaseChatService {
   ) {
     try {
       const displayMessage =
-        messageContent.length > 80 ? messageContent.substring(0, 80) + "…" : messageContent;
+        messageContent.length > 80
+          ? messageContent.substring(0, 80) + "…"
+          : messageContent;
+
+      // 🔽 Fetch the sender's first name
+      const senderFirstName = (await this.getUserFirstName(senderId)) || "Someone";
 
       await sendNotification(
         { type: "users", userIds: [recipientId] },
         {
           type: "chat",
-          title: `New message from ${senderId}`,
+          title: `New message from ${senderFirstName}`, // 🔽 use first name
           message: displayMessage,
           chatId: chatRoomId,
           favorId,
           icon: "/icons/chat.png",
-          // Deep-link to match <Route path="/chat/:favorId" />
-          url: `/chat/${favorId}`,
+          url: `/chat/${favorId}`, // deep-link for your SW/SPA
         }
       );
 
-      console.log(`📩 Push notification queued for recipient ${recipientId} (from ${senderId})`);
+      console.log(
+        `📩 Push notification queued for recipient ${recipientId} (from ${senderId})`
+      );
     } catch (error) {
       console.error("Error sending message notification:", error);
     }
   }
+
 
   // ---------- DB helpers (used by REST & WS) ----------
 
